@@ -29,6 +29,7 @@ cmake_install.cmake
 **/*.user
 .vs/*
 **/Debug/*
+!lib/**/*.lib
 CMakeFiles/*
 EASTL.dir/**
 RelWithDebInfo/*
