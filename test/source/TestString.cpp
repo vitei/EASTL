@@ -47,6 +47,22 @@ int TestString()
 	nErrorCount += TestBasicString32<eastl::u32string>();
 #endif
 
+	// Check for memory leaks by using the 'CountingAllocator' to ensure no active allocation after tests have completed.
+	CountingAllocator::resetCount();
+	nErrorCount += TestBasicString<eastl::basic_string<char, CountingAllocator>>();
+	VERIFY(CountingAllocator::getActiveAllocationCount() == 0); 
+
+	nErrorCount += TestBasicStringW<eastl::basic_string<wchar_t, CountingAllocator>>();
+	VERIFY(CountingAllocator::getActiveAllocationCount() == 0); 
+
+	nErrorCount += TestBasicString16<eastl::basic_string<char16_t, CountingAllocator>>();
+	VERIFY(CountingAllocator::getActiveAllocationCount() == 0); 
+
+#if EA_CHAR32_NATIVE
+	nErrorCount += TestBasicString32<eastl::basic_string<char32_t, CountingAllocator>>();
+	VERIFY(CountingAllocator::getActiveAllocationCount() == 0); 
+#endif
+
 	// to_string
 	{
 		VERIFY(eastl::to_string(42)    == "42");
@@ -92,7 +108,11 @@ int TestString()
 	{
 		// CustomAllocator has no data members which reduces the size of an eastl::basic_string via the empty base class optimization.
 		typedef eastl::basic_string<char, CustomAllocator> EboString;
-		static_assert(sizeof(EboString) == 3 * sizeof(void*), "");
+
+		// this must match the eastl::basic_string heap memory layout struct which is a pointer and 2 eastl_size_t.
+		const int expectedSize = sizeof(EboString::pointer) + (2 * sizeof(EboString::size_type));
+
+		static_assert(sizeof(EboString) == expectedSize, "unexpected layout size of basic_string");
 	}
 
 	return nErrorCount;

@@ -59,14 +59,16 @@
 #include <EASTL/internal/config.h>
 #include <EASTL/internal/type_pod.h>
 #include <EASTL/internal/in_place_t.h>
-#include <EASTL/internal/meta.h>
 #include <EASTL/internal/integer_sequence.h>
+#include <EASTL/meta.h>
 #include <EASTL/utility.h>
 #include <EASTL/functional.h> 
 #include <EASTL/initializer_list.h>
 #include <EASTL/tuple.h>
 
-EA_ONCE()
+#if defined(EA_PRAGMA_ONCE_SUPPORTED)
+	#pragma once // Some compilers (e.g. VC++) benefit significantly from using this. We've measured 3-4% build speed improvements in apps as a result.
+#endif
 
 #ifndef EA_COMPILER_CPP14_ENABLED
 	static_assert(false, "eastl::variant requires a C++14 compatible compiler (at least) ");
@@ -76,6 +78,101 @@ EA_DISABLE_VC_WARNING(4625) // copy constructor was implicitly defined as delete
 
 namespace eastl
 {
+	namespace internal
+	{
+		///////////////////////////////////////////////////////////////////////////
+		// default_construct_if_supported<T>
+		//
+		// Utility class to remove default constructor calls for types that 
+		// do not support default construction.
+		//
+		// We can remove these utilities when C++17 'constexpr if' is available.
+		//
+		template<typename T, bool = eastl::is_default_constructible_v<T>>
+		struct default_construct_if_supported
+		{
+			static void call(T* pThis)
+			{
+				new (pThis) T();
+			}
+		};
+
+		template<typename T>
+		struct default_construct_if_supported<T, false>
+		{
+			static void call(T*) {} // intentionally blank
+		};
+
+		///////////////////////////////////////////////////////////////////////////
+		// destroy_if_supported<T>
+		//
+		// Utility class to remove default constructor calls for types that 
+		// do not support default construction.
+		//
+		// We can remove these utilities when C++17 'constexpr if' is available.
+		//
+		template<typename T, bool = eastl::is_destructible_v<T>>
+		struct destroy_if_supported
+		{
+			static void call(T* pThis)
+			{
+				pThis->~T();
+			}
+		};
+
+		template<typename T>
+		struct destroy_if_supported<T, false>
+		{
+			static void call(T* pThis) {} // intentionally blank
+		};
+
+		///////////////////////////////////////////////////////////////////////////
+		// copy_if_supported<T>
+		//
+		// Utility class to remove copy constructor calls for types that 
+		// do not support copying.
+		//
+		// We can remove these utilities when C++17 'constexpr if' is available.
+		//
+		template<typename T, bool = eastl::is_copy_constructible_v<T>>
+		struct copy_if_supported
+		{
+			static void call(T* pThis, T* pOther)
+			{
+				new (pThis) T(*pOther);
+			}
+		};
+
+		template<typename T>
+		struct copy_if_supported<T, false>
+		{
+			static void call(T* pThis, T* pOther) {} // intentionally blank
+		};
+
+		///////////////////////////////////////////////////////////////////////////
+		// move_if_supported<T>
+		//
+		// Utility class to remove move constructor calls for types that 
+		// do not support moves.
+		//
+		// We can remove these utilities when C++17 'constexpr if' is available.
+		//
+		template<typename T, bool = eastl::is_move_constructible_v<T>>
+		struct move_if_supported
+		{
+			static void call(T* pThis, T* pOther)
+			{
+				new (pThis) T(eastl::move(*pOther));
+			}
+		};
+
+		template<typename T>
+		struct move_if_supported<T, false>
+		{
+			static void call(T* pThis, T* pOther) {} // intentionally blank
+		};
+	} // namespace internal 
+
 
 	///////////////////////////////////////////////////////////////////////////
 	// 20.7.3, variant_npos
@@ -104,6 +201,7 @@ namespace eastl
 	//
 	inline void CheckVariantCondition(bool b)
 	{
+		EA_UNUSED(b);
 	#if EASTL_EXCEPTIONS_ENABLED
 		if (!b)
 			throw bad_variant_access();
@@ -133,7 +231,7 @@ namespace eastl
 	// 20.7.11, hash support
 	template <class T> struct hash;
 	template <> struct hash<monostate>
-		{ size_t operator()(monostate val) const { return static_cast<size_t>(-0x42); } };
+		{ size_t operator()(monostate) const { return static_cast<size_t>(-0x42); } };
 
 	
 	///////////////////////////////////////////////////////////////////////////
@@ -156,6 +254,7 @@ namespace eastl
 	{
 		enum class StorageOp
 		{
+			DEFAULT_CONSTRUCT,
 			DESTROY,
 			COPY,
 			MOVE
@@ -171,7 +270,7 @@ namespace eastl
 		template<typename VariantStorageT>
 		inline void DoOp(StorageOp op, VariantStorageT&& other)  // bind to both rvalue and lvalues
 		{
-			if (!mpHandler && other.mpHandler)
+			if (other.mpHandler)
 				mpHandler = other.mpHandler;
 
 			if(mpHandler)
@@ -189,21 +288,27 @@ namespace eastl
 		{
 			switch (op)
 			{
+				case StorageOp::DEFAULT_CONSTRUCT:
+				{
+					internal::default_construct_if_supported<T>::call(pThis);
+				}
+				break;
+
 				case StorageOp::DESTROY:
 				{
-					pThis->~T();
+					internal::destroy_if_supported<T>::call(pThis);
 				}
 				break;
 
 				case StorageOp::COPY:
 				{
-					new (pThis) T(*pOther);
+					internal::copy_if_supported<T>::call(pThis, pOther);
 				}
 				break;
 
 				case StorageOp::MOVE:
 				{
-					new (pThis) T(eastl::move(*pOther));
+					internal::move_if_supported<T>::call(pThis, pOther);
 				}
 				break;
 
@@ -212,7 +317,10 @@ namespace eastl
 		}
 
 	public:
-		variant_storage() = default;
+		variant_storage()
+		{
+			DoOp(StorageOp::DEFAULT_CONSTRUCT); 
+		}
 
 		~variant_storage()
 		{
@@ -321,7 +429,7 @@ namespace eastl
 			// variant_storage used to store types. The size selected should be large enough to hold the largest type in
 			// the user provided variant type-list.  
 			static_assert(sizeof(aligned_storage_impl_t) >= sizeof(T), "T is larger than local buffer size");
-			new (&mBuffer) remove_reference_t<T>(args...);
+			new (&mBuffer) remove_reference_t<T>(eastl::forward<Args>(args)...);
 
 			// mpHandler = ...; // member does not exist in this template specialization
 		}
@@ -333,7 +441,7 @@ namespace eastl
 			// variant_storage used to store types. The size selected should be large enough to hold the largest type in
 			// the user provided variant type-list.  
 			static_assert(sizeof(aligned_storage_impl_t) >= sizeof(T), "T is larger than local buffer size");
-			new (&mBuffer) remove_reference_t<T>(il, args...);
+			new (&mBuffer) remove_reference_t<T>(il, eastl::forward<Args>(args)...);
 
 			// mpHandler = ...; // member does not exist in this template specialization
 		}
@@ -426,7 +534,7 @@ namespace eastl
 		static_assert(I < sizeof...(Types), "get_if is ill-formed if I is not a valid index in the variant typelist");
 		using return_type = add_pointer_t<variant_alternative_t<I, variant<Types...>>>;
 
-		return (!pv && pv->index() == I) ? nullptr : pv->mStorage.template get_as<return_type>();
+		return (!pv || pv->index() != I) ? nullptr : pv->mStorage.template get_as<return_type>();
 	}
 
 	template <size_t I, class... Types>
@@ -435,7 +543,7 @@ namespace eastl
 		static_assert(I < sizeof...(Types), "get_if is ill-formed if I is not a valid index in the variant typelist");
 		using return_type = add_pointer_t<variant_alternative_t<I, variant<Types...>>>;
 
-		return (!pv && pv->index() == I) ? nullptr : pv->mStorage.template get_as<return_type>();
+		return (!pv || pv->index() != I) ? nullptr : pv->mStorage.template get_as<return_type>();
 	}
 
 	template <class T, class... Types, size_t I = meta::get_type_index_v<T, Types...>>
@@ -561,13 +669,16 @@ namespace eastl
 		//
 
 		// Only participates in overload resolution when the first alternative is default constructible
-		template <typename = enable_if_t<is_default_constructible_v<T_0>>>
+		template <typename TT0 = T_0, typename = enable_if_t<is_default_constructible_v<TT0>>>
 		EA_CONSTEXPR variant() EA_NOEXCEPT : mIndex(variant_npos), mStorage()
 		{
+			mIndex = static_cast<variant_index_t>(0);
+			mStorage.template set_as<T_0>();
 		}
 
 		// Only participates in overload resolution if is_copy_constructible_v<T_i> is true for all T_i in Types....
-		template <typename = enable_if_t<conjunction_v<is_copy_constructible<Types>...>>>
+		template <bool enable = conjunction_v<is_copy_constructible<Types>...>,
+		          typename = enable_if_t<enable>> // add a dependent type to enable sfinae
 		variant(const variant& other)
 		{
 			if (this != &other)
@@ -578,9 +689,9 @@ namespace eastl
 		}
 
 		// Only participates in overload resolution if is_move_constructible_v<T_i> is true for all T_i in Types...
-		template <typename = enable_if_t<conjunction_v<is_move_constructible<Types>...>>>
+		template <bool enable = conjunction_v<is_move_constructible<Types>...>, typename = enable_if_t<enable>> // add a dependent type to enable sfinae
 		EA_CONSTEXPR variant(variant&& other) EA_NOEXCEPT(conjunction_v<is_move_constructible<Types>...>)
-			: mIndex(variant_npos), mStorage()
+		    : mIndex(variant_npos), mStorage()
 		{
 			if(this != &other)
 			{

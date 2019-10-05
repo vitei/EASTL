@@ -24,7 +24,9 @@
 #ifndef EASTL_ANY_H
 #define EASTL_ANY_H
 
-EA_ONCE()
+#if defined(EA_PRAGMA_ONCE_SUPPORTED)
+	#pragma once // Some compilers (e.g. VC++) benefit significantly from using this. We've measured 3-4% build speed improvements in apps as a result.
+#endif
 
 #include <EASTL/internal/config.h>
 #include <EASTL/internal/in_place_t.h>
@@ -75,6 +77,22 @@ namespace eastl
 				// code which could cause hard to track down bugs. 
 				*((volatile int*)0) = 0xDEADC0DE;
 			#endif
+		}
+
+		template<typename T, typename... Args>
+		void* DefaultConstruct(Args&&... args)
+		{
+			auto* pMem = EASTLAllocatorDefault()->allocate(sizeof(T), alignof(T), 0);
+
+			return ::new(pMem) T(eastl::forward<Args>(args)...);
+		}
+
+		template<typename T>
+		void DefaultDestroy(T* p)
+		{
+			p->~T();
+
+			EASTLAllocatorDefault()->deallocate(static_cast<void*>(p), sizeof(T));
 		}
 	}
 
@@ -136,6 +154,10 @@ namespace eastl
 		template <class ValueType> friend ValueType any_cast(const any& operand);
 		template <class ValueType> friend ValueType any_cast(any& operand);
 		template <class ValueType> friend ValueType any_cast(any&& operand);
+
+		//Adding Unsafe any cast operations
+		template <class ValueType> friend const ValueType* unsafe_any_cast(const any* pAny) EA_NOEXCEPT;
+		template <class ValueType> friend ValueType* unsafe_any_cast(any* pAny) EA_NOEXCEPT;
 
 
 		//////////////////////////////////////////////////////////////////////////////////////////
@@ -226,6 +248,7 @@ namespace eastl
 		};
 
 
+
 		//////////////////////////////////////////////////////////////////////////////////////////
 		// external storage handler
 		//
@@ -235,24 +258,25 @@ namespace eastl
 			template <typename V>
 			static inline void construct(storage& s, V&& v) 
 			{
-				s.external_storage = ::new T(eastl::forward<V>(v));
+				s.external_storage = Internal::DefaultConstruct<T>(eastl::forward<V>(v));
 			}
 
 			template <typename... Args>
 			static inline void construct_inplace(storage& s, Args... args)
 			{
-				s.external_storage = ::new T(eastl::forward<Args>(args)...);
+				s.external_storage = Internal::DefaultConstruct<T>(eastl::forward<Args>(args)...);
 			}
 
 			template <class NT, class U, class... Args>
 			static inline void construct_inplace(storage& s, std::initializer_list<U> il, Args&&... args)
 			{
-				s.external_storage = ::new NT(il, eastl::forward<Args>(args)...);
+				s.external_storage = Internal::DefaultConstruct<NT>(il, eastl::forward<Args>(args)...);
 			}
 
 			static inline void destroy(any& refAny)
 			{
-				delete static_cast<T*>(refAny.m_storage.external_storage);
+				Internal::DefaultDestroy(static_cast<T*>(refAny.m_storage.external_storage));
+
 				refAny.m_handler = nullptr;
 			}
 
@@ -477,16 +501,20 @@ namespace eastl
 				m_handler = tmp.m_handler;
 				tmp.m_handler(storage_operation::MOVE, &tmp, this);
 			}
-			else if (m_handler == nullptr)
+			else if (m_handler == nullptr && other.m_handler)
 			{
 				eastl::swap(m_handler, other.m_handler);
 				m_handler(storage_operation::MOVE, &other, this);
 			}
-			else if(other.m_handler == nullptr)
+			else if(m_handler && other.m_handler == nullptr)
 			{
 				eastl::swap(m_handler, other.m_handler);
 				other.m_handler(storage_operation::MOVE, this, &other);
 			}
+			//else if (m_handler == nullptr && other.m_handler == nullptr)
+			//{
+			//     // nothing to swap 
+			//}
 		}
 
 	    // 20.7.3.4, observers
@@ -568,7 +596,7 @@ namespace eastl
 	template <class ValueType>
 	inline const ValueType* any_cast(const any* pAny) EA_NOEXCEPT
 	{
-		return (pAny && pAny->m_handler //== &any::storage_handler<decay_t<ValueType>>::handler_func
+		return (pAny && pAny->m_handler EASTL_IF_NOT_DLL(== &any::storage_handler<decay_t<ValueType>>::handler_func)
 				#if EASTL_RTTI_ENABLED
 					&& pAny->type() == typeid(typename remove_reference<ValueType>::type)
 				#endif
@@ -580,7 +608,7 @@ namespace eastl
 	template <class ValueType>
 	inline ValueType* any_cast(any* pAny) EA_NOEXCEPT
 	{
-		return (pAny && pAny->m_handler //== &any::storage_handler<decay_t<ValueType>>::handler_func
+		return (pAny && pAny->m_handler EASTL_IF_NOT_DLL(== &any::storage_handler<decay_t<ValueType>>::handler_func)
 				#if EASTL_RTTI_ENABLED
 					&& pAny->type() == typeid(typename remove_reference<ValueType>::type)
 				#endif
@@ -589,7 +617,20 @@ namespace eastl
 		           nullptr;
 	}
 
-    //////////////////////////////////////////////////////////////////////////////////////////
+	//Unsafe operations - use with caution
+	template <class ValueType>
+	inline const ValueType* unsafe_any_cast(const any* pAny) EA_NOEXCEPT
+	{
+		return unsafe_any_cast<ValueType>(const_cast<any*>(pAny));
+	}
+
+	template <class ValueType>
+	inline ValueType* unsafe_any_cast(any* pAny) EA_NOEXCEPT
+	{
+		return static_cast<ValueType*>(pAny->m_handler(any::storage_operation::GET, pAny, nullptr));
+	}
+
+	//////////////////////////////////////////////////////////////////////////////////////////
 	// make_any
 	//
 	#if EASTL_VARIADIC_TEMPLATES_ENABLED

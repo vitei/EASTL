@@ -40,6 +40,7 @@ int TestFixedMap();
 int TestFixedSList();
 int TestFixedSet();
 int TestFixedString();
+int TestFixedTupleVector();
 int TestFixedVector();
 int TestFunctional();
 int TestHash();
@@ -51,6 +52,7 @@ int TestIntrusiveSList();
 int TestIterator();
 int TestList();
 int TestListMap();
+int TestLruCache();
 int TestMap();
 int TestMemory();
 int TestMeta();
@@ -64,6 +66,7 @@ int TestSegmentedVector();
 int TestSet();
 int TestSmartPtr();
 int TestSort();
+int TestSpan();
 int TestSparseMatrix();
 int TestString();
 int TestStringHashMap();
@@ -76,6 +79,7 @@ int TestVariant();
 int TestVector();
 int TestVectorMap();
 int TestVectorSet();
+int TestTupleVector();
 
 
 // Now enable warnings as desired.
@@ -144,37 +148,6 @@ int TestVectorSet();
 
 
 
-///////////////////////////////////////////////////////////////////////////////
-// EA_CHAR16
-//
-// EA_CHAR16 is defined in EABase 2.0.20 and later. If we are using an earlier
-// version of EABase then we replicate what EABase 2.0.20 does.
-//
-//
-#ifndef EA_WCHAR
-	 #define EA_WCHAR(s) L ## s
-#endif
-
-#ifndef EA_CHAR16
-	#if !defined(EA_CHAR16_NATIVE)
-		#if defined(_MSC_VER) && (_MSC_VER >= 1600) && defined(_HAS_CHAR16_T_LANGUAGE_SUPPORT) // VS2010+
-			#define EA_CHAR16_NATIVE 1
-		#elif defined(__GNUC__) && ((__GNUC__ * 100 + __GNUC_MINOR__) >= 404) && (defined(__GXX_EXPERIMENTAL_CXX0X__) || defined(__STDC_VERSION__)) // g++ (C++ compiler) 4.4+ with -std=c++0x or gcc (C compiler) 4.4+ with -std=gnu99
-			#define EA_CHAR16_NATIVE 1
-		#else
-			#define EA_CHAR16_NATIVE 0
-		#endif
-	#endif
-
-	#if EA_CHAR16_NATIVE && !defined(_MSC_VER) // Microsoft doesn't support char16_t string literals.
-		#define EA_CHAR16(s) u ## s
-	#elif (EA_WCHAR_SIZE == 2)
-		#define EA_CHAR16(s) L ## s
-	#endif
-#endif
-
-
-
 
 /// EASTL_TestLevel
 ///
@@ -212,7 +185,7 @@ int EASTLTest_CheckMemory_Imp(const char* pFile, int nLine);
 	#define EASTLTEST_STD_STL_VER_STLPORT
 #elif defined(_RWSTD_VER_STR) || defined(_RWSTD_NAMESPACE_END)
 	#define EASTLTEST_STD_STL_VER_APACHE
-#elif defined(_YVALS)
+#elif defined(_CPPLIB_VER)
 	#define EASTLTEST_STD_STL_VER_DINKUMWARE
 #elif defined(__GNUC__) && defined(_CXXCONFIG)
 	#define EASTLTEST_STD_STL_VER_GCC
@@ -255,6 +228,7 @@ const char* GetStdSTLName();
 /// gEASTLTest_AllocationCount
 ///
 extern int gEASTLTest_AllocationCount; 
+extern int gEASTLTest_TotalAllocationCount; 
 
 
 
@@ -1095,7 +1069,7 @@ public:
 	MallocAllocator(const MallocAllocator& x)
 		: mAllocCount(x.mAllocCount), mFreeCount(x.mFreeCount), mAllocVolume(x.mAllocVolume) {}
 
-	MallocAllocator(const MallocAllocator&, const char*) {}
+	MallocAllocator(const MallocAllocator& x, const char*) : MallocAllocator(x) {}
 
 	MallocAllocator& operator=(const MallocAllocator& x)
 	{
@@ -1204,23 +1178,25 @@ inline bool operator!=(const UnequalAllocator&, const UnequalAllocator&) { retur
 ///
 /// Counts allocation events allowing unit tests to validate assumptions.
 ///
-class CountingAllocator
+class CountingAllocator : public eastl::allocator
 {
 public:
+	using base_type = eastl::allocator;
+
 	EASTL_ALLOCATOR_EXPLICIT CountingAllocator(const char* pName = EASTL_NAME_VAL(EASTL_ALLOCATOR_DEFAULT_NAME))
-	    : mAllocator(pName)
+	    : base_type(pName)
 	{
 		totalCtorCount++;
 		defaultCtorCount++;
 	}
 
-	CountingAllocator(const CountingAllocator& x) : mAllocator(x.mAllocator) 
+	CountingAllocator(const CountingAllocator& x) : base_type(x)
 	{
 		totalCtorCount++;
 		copyCtorCount++;
 	}
 
-	CountingAllocator(const CountingAllocator& x, const char* pName) : mAllocator(x.mAllocator)
+	CountingAllocator(const CountingAllocator& x, const char* pName) : base_type(x)
 	{
 		totalCtorCount++;
 		copyCtorCount++;
@@ -1229,27 +1205,27 @@ public:
 
 	CountingAllocator& operator=(const CountingAllocator& x)
 	{
-		mAllocator = x.mAllocator;
+		base_type::operator=(x);
 		assignOpCount++;
 		return *this;
 	}
 
-	void* allocate(size_t n, int flags = 0)
+	virtual void* allocate(size_t n, int flags = 0)
 	{
 		activeAllocCount++;
 		totalAllocCount++;
 		totalAllocatedMemory += n;
 		activeAllocatedMemory += n;
-		return mAllocator.allocate(n, flags);
+		return base_type::allocate(n, flags);
 	}
 
-	void* allocate(size_t n, size_t alignment, size_t offset, int flags = 0)
+	virtual void* allocate(size_t n, size_t alignment, size_t offset, int flags = 0)
 	{
 		activeAllocCount++;
 		totalAllocCount++;
 		totalAllocatedMemory += n;
 		activeAllocatedMemory += n;
-		return mAllocator.allocate(n, alignment, offset, flags);
+		return base_type::allocate(n, alignment, offset, flags);
 	}
 
 	void deallocate(void* p, size_t n)
@@ -1257,15 +1233,17 @@ public:
 		activeAllocCount--;
 		totalDeallocCount--;
 		activeAllocatedMemory -= n;
-		return mAllocator.deallocate(p, n);
+		return base_type::deallocate(p, n);
 	}
 
-	const char* get_name() const          { return mAllocator.get_name(); }
-	void set_name(const char* pName)      { mAllocator.set_name(pName); }
+	const char* get_name() const          { return base_type::get_name(); }
+	void set_name(const char* pName)      { base_type::set_name(pName); }
 
-	static auto getAllocationCount()      { return totalAllocCount; }
-	static auto getTotalAllocationSize()  { return totalAllocatedMemory; }
-	static auto getActiveAllocationSize() { return activeAllocatedMemory; }
+	static auto getTotalAllocationCount()  { return totalAllocCount; }
+	static auto getTotalAllocationSize()   { return totalAllocatedMemory; }
+	static auto getActiveAllocationSize()  { return activeAllocatedMemory; }
+	static auto getActiveAllocationCount() { return activeAllocCount; }
+	static auto neverUsed()				   { return totalAllocCount == 0; }
 
 	static void resetCount()
 	{
@@ -1280,8 +1258,6 @@ public:
 		activeAllocatedMemory = 0;
 	}
 
-	eastl::allocator mAllocator;
-
 	static uint64_t activeAllocCount;
 	static uint64_t totalAllocCount;
 	static uint64_t totalDeallocCount;
@@ -1293,8 +1269,10 @@ public:
 	static uint64_t activeAllocatedMemory; // currently allocated memory by allocator
 };
 
-inline bool operator==(const CountingAllocator& rhs, const CountingAllocator& lhs) { return rhs.mAllocator == lhs.mAllocator; }
+inline bool operator==(const CountingAllocator& rhs, const CountingAllocator& lhs) { return operator==(CountingAllocator::base_type(rhs), CountingAllocator::base_type(lhs)); }
 inline bool operator!=(const CountingAllocator& rhs, const CountingAllocator& lhs) { return !(rhs == lhs); }
+
+
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1543,6 +1521,56 @@ struct ValueInitOf
 	T mV;
 };
 
+// MoveOnlyType - useful for verifying containers that may hold, e.g., unique_ptrs to make sure move ops are implemented
+struct MoveOnlyType
+{
+	MoveOnlyType() = delete;
+	MoveOnlyType(int val) : mVal(val) {}
+	MoveOnlyType(const MoveOnlyType&) = delete;
+	MoveOnlyType(MoveOnlyType&& x) : mVal(x.mVal) { x.mVal = 0; }
+	MoveOnlyType& operator=(const MoveOnlyType&) = delete;
+	MoveOnlyType& operator=(MoveOnlyType&& x)
+	{
+		mVal = x.mVal;
+		x.mVal = 0;
+		return *this;
+	}
+	bool operator==(const MoveOnlyType& o) const { return mVal == o.mVal; }
+
+	int mVal;
+};
+
+// MoveOnlyTypeDefaultCtor - useful for verifying containers that may hold, e.g., unique_ptrs to make sure move ops are implemented
+struct MoveOnlyTypeDefaultCtor
+{
+	MoveOnlyTypeDefaultCtor() = default;
+	MoveOnlyTypeDefaultCtor(int val) : mVal(val) {}
+	MoveOnlyTypeDefaultCtor(const MoveOnlyTypeDefaultCtor&) = delete;
+	MoveOnlyTypeDefaultCtor(MoveOnlyTypeDefaultCtor&& x) : mVal(x.mVal) { x.mVal = 0; }
+	MoveOnlyTypeDefaultCtor& operator=(const MoveOnlyTypeDefaultCtor&) = delete;
+	MoveOnlyTypeDefaultCtor& operator=(MoveOnlyTypeDefaultCtor&& x)
+	{
+		mVal = x.mVal;
+		x.mVal = 0;
+		return *this;
+	}
+	bool operator==(const MoveOnlyTypeDefaultCtor& o) const { return mVal == o.mVal; }
+
+	int mVal;
+};
+
+
+
+//////////////////////////////////////////////////////////////////////////////
+// Utility RAII class that sets a new default allocator for the scope
+//
+struct AutoDefaultAllocator
+{
+	eastl::allocator* mPrevAllocator = nullptr;
+
+	AutoDefaultAllocator(eastl::allocator* nextAllocator) { mPrevAllocator = SetDefaultAllocator(nextAllocator); }
+	~AutoDefaultAllocator()                               { SetDefaultAllocator(mPrevAllocator); }
+};
 
 
 #endif // Header include guard

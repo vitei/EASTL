@@ -3,13 +3,6 @@
 /////////////////////////////////////////////////////////////////////////////
 
 
-// Due to a bug in VC++, we have no choice but to disable this warning, 
-// as it is a bogus warning in some cases.
-#if defined(_MSC_VER)
-	#pragma warning(disable: 4244)  // conversion from '__w64 const int' to 'int', possible loss of data
-#endif
-
-
 #include "EASTLTest.h"
 #include <EABase/eabase.h>
 #include <EASTL/deque.h>
@@ -17,6 +10,8 @@
 #include <EASTL/vector.h>
 #include <EASTL/string.h>
 #include <EASTL/algorithm.h>
+#include <EASTL/unique_ptr.h>
+#include "ConceptImpls.h"
 
 #if !defined(EA_COMPILER_NO_STANDARD_CPP_LIBRARY)
 	EA_DISABLE_ALL_VC_WARNINGS()
@@ -720,6 +715,84 @@ int TestDeque()
 		}
 	#endif // EA_COMPILER_NO_STANDARD_CPP_LIBRARY
 
+	// test deque support of move-only types
+	{
+		{
+			eastl::deque<MoveAssignable> d;
+			d.emplace_back(MoveAssignable::Create());
+			d.emplace_front(MoveAssignable::Create());
+
+			auto cd = eastl::move(d);
+			EATEST_VERIFY( d.size() == 0);
+			EATEST_VERIFY(cd.size() == 2);
+		}
+
+		{
+			// User regression but passing end() to deque::erase is not valid.  
+			// Iterator passed to deque::erase but must valid and dereferencable.
+			//
+			// eastl::deque<MoveAssignable> d;  // empty deque
+			// d.erase(d.begin());
+			// EATEST_VERIFY(d.size() == 0);
+		}
+
+		// simply test the basic api of deque with a move-only type
+		{
+			eastl::deque<MoveAssignable> d;
+
+			// emplace_back
+			d.emplace_back(MoveAssignable::Create());
+			d.emplace_back(MoveAssignable::Create());
+			d.emplace_back(MoveAssignable::Create());
+
+			// erase
+			d.erase(d.begin());
+			EATEST_VERIFY(d.size() == 2);
+
+			// at / front / back / operator[]
+			EATEST_VERIFY(d[0].value == 42);
+			EATEST_VERIFY(d.at(0).value == 42);
+			EATEST_VERIFY(d.front().value == 42);
+			EATEST_VERIFY(d.back().value == 42);
+
+			// clear
+			d.clear();
+			EATEST_VERIFY(d.size() == 0);
+
+			// emplace
+			d.emplace(d.begin(), MoveAssignable::Create());
+			d.emplace(d.begin(), MoveAssignable::Create());
+			EATEST_VERIFY(d.size() == 2);
+
+			// pop_back
+			d.pop_back();
+			EATEST_VERIFY(d.size() == 1);
+
+			// push_back / push_front / resize requires T be 'CopyConstructible' 
+
+			{
+				eastl::deque<MoveAssignable> swapped_d;
+
+				// emplace_front
+				swapped_d.emplace_front(MoveAssignable::Create());
+				swapped_d.emplace_front(MoveAssignable::Create());
+				swapped_d.emplace_front(MoveAssignable::Create());
+
+				// swap
+				swapped_d.swap(d);
+				EATEST_VERIFY(swapped_d.size() == 1);
+				EATEST_VERIFY(d.size() == 3);
+			}
+
+			// pop_front
+			d.pop_front();
+			EATEST_VERIFY(d.size() == 2);
+
+			// insert
+			d.insert(d.end(), MoveAssignable::Create());
+			EATEST_VERIFY(d.size() == 3);
+		}
+	}
 
 	{
 		// deque(std::initializer_list<value_type> ilist, const allocator_type& allocator = EASTL_DEQUE_DEFAULT_ALLOCATOR);
@@ -791,7 +864,7 @@ int TestDeque()
 		EATEST_VERIFY_F((toDequeA.size() == 3) && (toDequeA.front().mX == (6+7+8)) && (TestObject::sTOCtorCount == 4), "size: %u, mX: %u, count: %d", (unsigned)toDequeA.size(), (unsigned)toDequeA.front().mX, (int)TestObject::sTOCtorCount);
 
 
-		// This test is similar to the emplace EASTL_MOVE_SEMANTICS_ENABLED pathway above. 
+		// This test is similar to the emplace pathway above. 
 		TestObject::Reset();
 
 		//void push_front(T&& x);
@@ -953,6 +1026,36 @@ int TestDeque()
 		auto prev = d.get_allocator().getActiveAllocationSize();
 		d.shrink_to_fit();
 		VERIFY(d.get_allocator().getActiveAllocationSize() < prev);
+	}
+
+	{
+	#ifndef EASTL_OPENSOURCE
+		auto prevAllocCount = gEASTLTest_AllocationCount;
+	#endif
+		{
+			EA_DISABLE_VC_WARNING(4625 4626)
+			struct a
+			{
+				a(int* p)
+					: ptr(p) { }
+
+				eastl::unique_ptr<int> ptr;
+			};
+			EA_RESTORE_VC_WARNING()
+
+			static_assert(eastl::has_trivial_relocate<a>::value == false, "failure");
+
+			eastl::deque<a> d;
+
+			d.emplace_back(new int(1));
+			d.emplace_back(new int(2));
+			d.emplace_back(new int(3));
+
+			d.erase(d.begin() + 1);
+		}
+	#ifndef EASTL_OPENSOURCE
+		VERIFY(gEASTLTest_AllocationCount == prevAllocCount);
+	#endif
 	}
 
 	return nErrorCount;

@@ -155,13 +155,13 @@ static int TestUtilityPair()
 		// template<typename U>
 		// pair(U&& x, const T2& y)
 		typedef eastl::pair<uint16_t, const char8_t*> LCIDMapping;
-		LCIDMapping lcidMappingArray[1] = {LCIDMapping(0x0036, "af")};  // Note that 0x0036 is of type int.
+		LCIDMapping lcidMappingArray[1] = {LCIDMapping(0x0036, EA_CHAR8("af"))};  // Note that 0x0036 is of type int.
 		EATEST_VERIFY((lcidMappingArray[0].first == 0x0036));
 
 		// template<typename V>
 		// pair(const T1& x, V&& y)
 		typedef eastl::pair<const char8_t*, uint16_t> LCIDMapping2;
-		LCIDMapping2 lcidMapping2Array[1] = {LCIDMapping2("af", 0x0036)};
+		LCIDMapping2 lcidMapping2Array[1] = {LCIDMapping2(EA_CHAR8("af"), 0x0036)};
 		EATEST_VERIFY((lcidMapping2Array[0].second == 0x0036));
 
 // The following code was giving an EDG compiler:
@@ -236,9 +236,9 @@ void swap(NoThrowSwappable& x, NoThrowSwappable& y) EA_NOEXCEPT_IF(true)
 struct Swappable1 {};
 struct Swappable2 {};
 struct Swappable3 {};
-void swap(Swappable1& x, Swappable2& y) {} 
-void swap(Swappable2& x, Swappable1& y) {} 
-void swap(Swappable1& x, Swappable3& y) {} // intentionally missing 'swap(Swappable3, Swappable1)'
+void swap(Swappable1&, Swappable2&) {} 
+void swap(Swappable2&, Swappable1&) {} 
+void swap(Swappable1&, Swappable3&) {} // intentionally missing 'swap(Swappable3, Swappable1)'
 
 
 static int TestUtilitySwap()
@@ -348,7 +348,7 @@ static int TestUtilitySwap()
 	return nErrorCount;
 }
 
-#if !defined(EA_COMPILER_NO_NOEXCEPT) && EASTL_MOVE_SEMANTICS_ENABLED
+#if !defined(EA_COMPILER_NO_NOEXCEPT)
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Warning C4626 warns against an implicitly deleted move assignment operator.
@@ -417,7 +417,7 @@ static int TestUtilityMove()
 	int nErrorCount = 0;
 
 // move_if_noexcept
-#if !defined(EA_COMPILER_NO_NOEXCEPT) && EASTL_MOVE_SEMANTICS_ENABLED
+#if !defined(EA_COMPILER_NO_NOEXCEPT)
 	noexcept_move_copy nemcA;
 	noexcept_move_copy nemcB =
 		eastl::move_if_noexcept(nemcA);  // nemcB should be constructed via noexcept_move_copy(noexcept_move_copy&&)
@@ -544,13 +544,12 @@ static int TestUtilityExchange()
 	}
 
 	// Construct pair using single move constructor
-	#if EASTL_MOVE_SEMANTICS_ENABLED
 	{
 		struct TestPairSingleMoveConstructor
 		{
 			void test(int&& val)
 			{
-				eastl::pair<int,int> p(eastl::move(val));
+				eastl::pair<int,int> p(eastl::pair_first_construct, eastl::move(val));
 			}
 		};
 
@@ -558,7 +557,19 @@ static int TestUtilityExchange()
 		TestPairSingleMoveConstructor test;
 		test.test(eastl::move(i1));
 	}
-	#endif
+
+	// User reported regression where via reference collapsing, we see the same single element ctor defined twice.
+	//
+	// T = const U&
+	// pair(const T&) -> pair(const const U& &) -> pair(const U&)
+	// pair(T&&)      -> pair(const U& &&)      -> pair(const U&)
+	{
+		struct FooType {};
+
+		using VectorOfPairWithReference = eastl::vector<eastl::pair<const FooType&, float>>;
+
+		VectorOfPairWithReference v;
+	}
 
 	return nErrorCount;
 }
